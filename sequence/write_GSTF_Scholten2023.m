@@ -34,11 +34,11 @@ Label = struct();
 
 Setup.ScannerType      = 'Terra-XR';  % for pns_check
 
-Setup.TR = 500e-3;            % Repetition time 500 ms
+Setup.TR = 2000e-3;            % Repetition time 500 ms
 Setup.sliceThickness = 3e-3;  % Thin slice thickness 3 mm
 Setup.sliceOffset = 16.5e-3;  % Offset excitation distance +/- 16.5 mm
-Setup.adcDwell = 5.0e-6;      % Receiver bandwidth approx 200 kHz
-Setup.adcDuration = 40e-3;    % ADC readout duration 40 ms
+Setup.adcDwell = 9.8e-6;      % Receiver bandwidth approx 200 kHz
+Setup.adcDuration = 40.18e-3;    % ADC readout duration 40 ms
 Setup.adcSamples = round(Setup.adcDuration / Setup.adcDwell); % Number of ADC samples
 
 Setup.RFflipEx   = 90;
@@ -80,7 +80,7 @@ Delay.delayTRFill = mr.makeDelay(1) ;
 MinTRActual = 0 ;
 axes_to_test = {'x', 'y', 'z'};
 
-TotalTRs = length(axes_to_test) * 7 * 2 * 2;
+TotalTRs = Actual.nRepetition * length(axes_to_test) * 7 * 2 * 2;
 TRCounter = 0;
 
 TriangleBlock = zeros(1, TotalTRs);
@@ -162,44 +162,7 @@ for ax_idx = 1:length(axes_to_test)
         end
     end
 end
-% seq.plot()
-%%
-[seq] = check_Timing(seq);
-Actual.ScannerType = 'Terra-XJ';
-[seq] = check_PNS(seq, Actual);
-
-seq.setDefinition('FOV'                  , [200, 200, 200] * 1e-3      );
-seq.setDefinition('BaseResolution'       , Actual.adcSamples           ); 
-seq.setDefinition('MatrixSize'           , [Actual.adcSamples, 1, 1]   );
-
-seq.setDefinition('TR'                   , Actual.TR                   );
-seq.setDefinition('TE'                   , 5e-3                        );
-seq.setDefinition('Excit_FlipAngle'      , Actual.RFflipEx             );
-seq.setDefinition('Excit_Duration'       , Actual.RFDuration           );
-seq.setDefinition('Excit_TBP'            , Actual.RFTBP                );
-seq.setDefinition('Excit_TBP'            , Actual.RFTBP                );
-
-seq.setDefinition('GSTF_rise'            , tr_rise                     );
-seq.setDefinition('GSTF_amp_mT'          , tr_amp_mT                   );
-seq.setDefinition('GSTF_delays'          , delays                      );
-seq.setDefinition('GSTF_scheme_type'     , scheme_type                 );
-
-seq.setDefinition('nRepetition'          , Actual.nRepetition          );
-
-seq.setDefinition('Developer'            , 'Jinyuan Zhang'             );
-seq.setDefinition('Name'                 , 'gstf_7T_scholten'          );
-
-seq.checkTiming();
-seq.plot()
-
 outpath = '';
-seqname = sprintf('fast_gstf_7T_tr%s_fa%s_rep%d', num2str(Actual.TR*1e3), num2str(Actual.RFflipEx), Actual.nRepetition);
-
-seq.write(strcat(outpath, seqname,'.seq'));
-
-% %%
-% rep = seq.testReport;
-% fprintf([rep{:}]);
 
 %%
 waveform = seq.waveforms_and_times();
@@ -248,11 +211,55 @@ for i = 1:7
     plot(t_nominal*1e3, grad_nominal(:, i))
 end
 
-
-
-%%
+%
 grad_input = single(grad_nominal);
 lengthADC = round(adc.numSamples * adc.dwell / dt_1us);
 shift = round(TimeShiftADC / dt_1us) + 1;
 
 save(strcat(outpath, 'input_H_fast.mat'), 'grad_input', 'lengthADC', 'shift');
+
+%%
+[seq] = check_Timing(seq);
+Actual.ScannerType = 'Terra-XJ';
+[seq] = check_PNS(seq, Actual);
+
+seq.setDefinition('FOV'                  , [200, 200, 200] * 1e-3      );
+seq.setDefinition('BaseResolution'       , Actual.adcSamples           ); 
+seq.setDefinition('MatrixSize'           , [Actual.adcSamples, 1, 1]   );
+
+seq.setDefinition('TR'                   , Actual.TR                   );
+seq.setDefinition('TE'                   , 5e-3                        );
+seq.setDefinition('Excit_FlipAngle'      , Actual.RFflipEx             );
+seq.setDefinition('Excit_Duration'       , Actual.RFDuration           );
+seq.setDefinition('Excit_TBP'            , Actual.RFTBP                );
+seq.setDefinition('Excit_TBP'            , Actual.RFTBP                );
+
+seq.setDefinition('GSTF_rise'            , tr_rise                     );
+seq.setDefinition('GSTF_amp_mT'          , tr_amp_mT                   );
+seq.setDefinition('GSTF_delays'          , delays                      );
+seq.setDefinition('GSTF_scheme_type'     , scheme_type                 );
+
+seq.setDefinition('adcDwell'             , Setup.adcDwell              );
+seq.setDefinition('adcDuration'          , Setup.adcDuration           );
+seq.setDefinition('adcSamples'           , Setup.adcSamples            );
+
+seq.setDefinition('TriangleStartTime'    , Actual.TriangleStartTime    );
+seq.setDefinition('TimeShiftADC_us'      , shift                       );
+
+
+seq.setDefinition('nRepetition'          , Actual.nRepetition          );
+
+seq.setDefinition('Developer'            , 'Jinyuan Zhang'             );
+seq.setDefinition('Name'                 , 'gstf_7T_scholten'          );
+
+seq.checkTiming();
+seq.plot()
+
+
+seqname = sprintf('fast_gstf_7T_tr%s_fa%s_rep%d', num2str(Actual.TR*1e3), num2str(Actual.RFflipEx), Actual.nRepetition);
+
+seq.write(strcat(outpath, seqname,'.seq'));
+
+% %%
+% rep = seq.testReport;
+% fprintf([rep{:}]);
