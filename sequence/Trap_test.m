@@ -2,7 +2,7 @@
 % Pulseq implementation for Trapezoid Validation at 7T
 % =========================================================================
 clc; clear; close all;
-addpath(genpath('pulseq')); % 请根据实际情况修改路径
+addpath(genpath('../pulseq')); 
 
 sys = mr.opts('MaxGrad',70, 'GradUnit', 'mT/m', ...
     'MaxSlew', 200, 'SlewUnit', 'T/m/s', ...
@@ -119,7 +119,7 @@ seq.setDefinition('delayTestGrad'        , Actual.delayTestGrad        );
 seq.setDefinition('nRepetition'          , Actual.nRepetition          );
 
 seq.setDefinition('Developer'            , 'Jinyuan Zhang'             );
-seq.setDefinition('Name'                 , 'gstf_7T_scholten'          );
+seq.setDefinition('Name'                 , 'val_trapz_7T_scholten'          );
 
 seq.checkTiming();
 seq.plot()
@@ -129,38 +129,51 @@ seqname = sprintf('val_trapz_7T_tr%d_fa%s_rep%d', round(Actual.TR*1e3), num2str(
 seq.write([seqname, '.seq']);
 
 
-%%
 %% =========================================================================
-% 生成 input_trapz.mat 供 Fast-GIRF 预测对比使用 (带精准延迟补偿)
+% Generate input_trapz.mat for Fast-GIRF prediction (dt = 10us)
 % =========================================================================
-disp('Generating nominal waveform...');
+disp('Generating nominal waveform with dt = 10us...');
 
-dt_1us = 1e-6;  
+% Set time step to 10us to match GIRF raster time
+dt_10us = 10e-6;  
 window = Actual.adcDuration;
-t_nominal = 0:dt_1us:window;
+t_nominal = 0:dt_10us:window;
 grad_input = zeros(length(t_nominal), 1);
 
+% Calculate relative delay between test gradient and ADC start in 10us steps
+% delayTestGrad is from the start of the block; adc.delay is typically 0
 relative_delay_s = Actual.delayTestGrad - adc.delay; 
-delay_pts = round(relative_delay_s / dt_1us); 
+delay_pts = round(relative_delay_s / dt_10us); 
 
+% Calculate number of points for each trapezoid segment (dt = 10us)
+% Trapz.rise = 40e-6 -> 4 pts; Trapz.flat = 300e-6 -> 30 pts; Trapz.fall = 40e-6 -> 4 pts
+n_rise = round(Trapz.rise / dt_10us);
+n_flat = round(Trapz.flat / dt_10us);
+n_fall = round(Trapz.fall / dt_10us);
 
-idx_up = (1:41) + delay_pts; 
-grad_input(idx_up) = linspace(0, Trapz.amp, 41);
+% 1. Rise time segment
+idx_up = (1 : n_rise + 1) + delay_pts; 
+grad_input(idx_up) = linspace(0, Trapz.amp, n_rise + 1);
 
-
-idx_flat = (42:341) + delay_pts; 
+% 2. Flat top segment
+idx_flat = (n_rise + 2 : n_rise + n_flat) + delay_pts; 
 grad_input(idx_flat) = Trapz.amp;
 
+% 3. Fall time segment
+idx_down = (n_rise + n_flat + 1 : n_rise + n_flat + n_fall + 1) + delay_pts; 
+grad_input(idx_down) = linspace(Trapz.amp, 0, n_fall + 1);
 
-idx_down = (342:382) + delay_pts; 
-grad_input(idx_down) = linspace(Trapz.amp, 0, 41);
-
-
+% Convert to single precision for compatibility
 grad_input = single(grad_input);
 
-lengthADC = round(Actual.adcSamples * Actual.adcDwell / dt_1us);
+% Calculate total points for ADC duration based on 10us grid
+lengthADC = round(Actual.adcSamples * Actual.adcDwell / dt_10us);
 
+% Shift parameter for alignment (default is 1)
 shift = 1; 
 
+% Save variables to MAT file for GIRF prediction comparison
 save('input_trapz.mat', 'grad_input', 'lengthADC', 'shift');
-disp(['Saved input_trapz.mat successfully! Gradient starts at point: ', num2str(delay_pts + 1)]);
+
+disp(['Saved input_trapz.mat successfully with dt = 10us!']);
+disp(['Gradient starts at point index: ', num2str(delay_pts + 1)]);
