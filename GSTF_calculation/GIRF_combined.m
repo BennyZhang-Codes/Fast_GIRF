@@ -50,15 +50,16 @@ classdef GIRF_combined < handle
             % Calculate combined GIRF
             % This needs some phase shifting to get the impulse at the start of the time axis.
             % (c.f. GIRF_matrix.correct_GSTF_phase())
-            linear_array = (1:1:size(obj.gstf,1))*pi;
-            corrected_phase = angle(obj.gstf.*exp(1i*(-obj.f_axis*2*pi*corr_delay+linear_array)).');
+            % linear_array = (1:1:size(obj.gstf,1))*pi;
+            % corrected_phase = angle(obj.gstf.*exp(1i*(-obj.f_axis*2*pi*corr_delay+linear_array)).');
 
             [~, idx_dc] = min(abs(obj.f_axis));
-            if abs(corrected_phase(idx_dc)) > pi/2 
+            linear_array = (1:1:size(obj.gstf,1))*pi;
+            
+            if mod(round(linear_array(idx_dc)/pi), 2) ~= 0 
                 linear_array = (0:1:size(obj.gstf,1)-1)*pi;
-                corrected_phase = angle(obj.gstf.*exp(1i*(-obj.f_axis*2*pi*corr_delay+linear_array)).');
             end
-
+            corrected_phase = angle(obj.gstf.*exp(1i*(-obj.f_axis*2*pi*corr_delay+linear_array)).');
             gstf_to_girf = abs(obj.gstf).*exp(1i*corrected_phase);
             obj.girf = real(ifft_1D(gstf_to_girf,1));
             obj.fieldOffsets = fieldOffsets;
