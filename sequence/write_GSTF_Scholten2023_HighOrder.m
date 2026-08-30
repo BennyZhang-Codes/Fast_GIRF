@@ -34,11 +34,13 @@ Delay = struct();
 Label = struct();
 %% ==================== Core Parameter Settings ====================
 
-Setup.ScannerType      = 'Terra-XR';  % for pns_check
+% Select the actual gradient system used for the PNS check. Do not override
+% this value later in the sequence; the definition is also written to .seq.
+Setup.ScannerType = 'Terra-XJ';
 
 % A shorter TR and one repetition are used as the default development
 % protocol because the addition of 2D phase encoding substantially
-% increases the number of TRs. These values can be changed as needed.
+% increases the number of TRs.
 Setup.TR = 500e-3;
 Setup.nRepetition = 1;
 
@@ -147,9 +149,8 @@ ReadoutBlock  = zeros(1,TotalTRs);
 TRStartBlock  = zeros(1,TotalTRs);
 NominalTRIndex = zeros(1,7);
 
-% Acquisition manifest. This does not change the scanner sequence; it is
-% saved alongside the sequence so that raw-data sorting can reproduce the
-% exact acquisition ordering.
+% Acquisition manifest. This is saved alongside the .seq and is the source
+% of truth for sorting the sequential Siemens image ADC stream.
 Manifest = repmat(struct('Axis','','Repetition',0,'Triangle',0,'Scheme',0, ...
     'Delay_s',0,'Polarity',0,'PE1Index',0,'PE2Index',0,'PE1Value',0, ...
     'PE2Value',0,'SliceIndex',0,'SlicePosition_m',0),TotalTRs,1);
@@ -167,8 +168,6 @@ for ax_idx = 1:length(axes_to_test)
     %   dSag (slice x): PE1 = y, PE2 = z
     %   dCor (slice y): PE1 = x, PE2 = z
     %   dTra (slice z): PE1 = y, PE2 = x
-    % Keeping this convention avoids any coordinate swap in the existing
-    % Fast_GIRF spatial reconstruction code.
     if strcmp(ax,'x')
         pe_channels = {'y','z'};
     elseif strcmp(ax,'y')
@@ -186,15 +185,19 @@ for ax_idx = 1:length(axes_to_test)
     end
 
     for irep = 1:Actual.nRepetition
-        % 7 triangles x 2 polarities x spatial PE points x offset slices
+        % Acquisition order is triangle -> PE -> polarity -> slice. Keeping
+        % +/- at the same PE point adjacent reduces the time between the
+        % paired measurements from 26 s to 2 s for the default protocol,
+        % improving cancellation of slow field drift while each physical
+        % slice is still excited only once every four TRs (2 s).
         for t_idx = 1:7
-            for pol = [1, -1]
-                for pe_idx = 1:numPEAcq
-                    pe1_idx = validPhaseEncodes(pe_idx,1);
-                    pe2_idx = validPhaseEncodes(pe_idx,2);
-                    peArea1 = peAreas(pe1_idx);
-                    peArea2 = peAreas(pe2_idx);
+            for pe_idx = 1:numPEAcq
+                pe1_idx = validPhaseEncodes(pe_idx,1);
+                pe2_idx = validPhaseEncodes(pe_idx,2);
+                peArea1 = peAreas(pe1_idx);
+                peArea2 = peAreas(pe2_idx);
 
+                for pol = [1, -1]
                     for sl_idx = 1:numSlices
                         TRCounter = TRCounter + 1;
                         TRStartBlock(TRCounter) = length(seq.blockEvents)+1;
@@ -226,7 +229,8 @@ for ax_idx = 1:length(axes_to_test)
                         end
                         ReadoutBlock(TRCounter) = length(seq.blockEvents);
 
-                        if ax_idx == 1 && irep == 1 && pol == 1 && pe_idx == 1 && sl_idx == 1
+                        if ax_idx == 1 && irep == 1 && t_idx >= 1 && ...
+                                pe_idx == 1 && pol == 1 && sl_idx == 1 && NominalTRIndex(t_idx) == 0
                             NominalTRIndex(t_idx) = TRCounter;
                         end
 
@@ -314,7 +318,8 @@ title('Nominal Fast-GIRF probing gradients');
 
 grad_input = single(grad_nominal);
 lengthADC = round(adc.numSamples * adc.dwell / dt_1us);
-shift = round(TimeShiftADC / dt_1us) + 1;
+shift = round(TimeShiftADC / dt_1us) + 1; % MATLAB 1-based sample index
+TimeShiftADC_us = round(TimeShiftADC*1e6); % physical ADC start time [us]
 
 save(strcat(outpath,'input_H_fast_HighOrder.mat'),'grad_input','lengthADC','shift');
 
@@ -324,8 +329,16 @@ save(strcat(outpath,'acq_manifest_HighOrder.mat'),'acq_manifest','validPhaseEnco
 writetable(acq_manifest,strcat(outpath,'acq_manifest_HighOrder.csv'));
 
 %% Sequence checks and definitions %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-[seq] = check_Timing(seq);
-Actual.ScannerType = 'Terra-XJ';
+[ok,error_report] = seq.checkTiming();
+if ok
+    fprintf('Timing check passed successfully\n');
+else
+    fprintf('Timing check failed! Error listing follows:\n');
+    fprintf([error_report{:}]);
+    fprintf('\n');
+    error('High-Order sequence timing check failed; sequence will not be written.');
+end
+
 [seq] = check_PNS(seq,Actual);
 
 seq.setDefinition('FOV'                  , [Actual.PEFOV, Actual.PEFOV, Actual.PEFOV]);
@@ -348,7 +361,8 @@ seq.setDefinition('adcDuration'          , Actual.adcDuration);
 seq.setDefinition('adcSamples'           , Actual.adcSamples);
 
 seq.setDefinition('TriangleStartTime'    , Actual.TriangleStartTime);
-seq.setDefinition('TimeShiftADC_us'      , shift);
+seq.setDefinition('TimeShiftADC_us'      , TimeShiftADC_us);
+seq.setDefinition('TimeShiftADC_index'   , shift);
 seq.setDefinition('nRepetition'          , Actual.nRepetition);
 
 seq.setDefinition('HighOrder_nPE'        , Actual.nPE);
@@ -356,12 +370,11 @@ seq.setDefinition('HighOrder_PEFOV'      , Actual.PEFOV);
 seq.setDefinition('HighOrder_PEMode'     , Actual.PEMode);
 seq.setDefinition('HighOrder_numPEAcq'   , numPEAcq);
 seq.setDefinition('HighOrder_sliceOffsets_m', Actual.sliceOffsets);
+seq.setDefinition('HighOrder_AcquisitionOrder', 'axis-repetition-triangle-PE-polarity-slice');
+seq.setDefinition('ScannerType'          , Actual.ScannerType);
 
 seq.setDefinition('Developer'            , 'Jinyuan Zhang');
 seq.setDefinition('Name'                 , 'gstf_7T_scholten_HighOrder');
-
-seq.checkTiming();
-seq.plot()
 
 seqname = sprintf('fast_gstf_HighOrder_7T_pe%d_%s_tr%s_fa%s_rep%d', ...
     Actual.nPE,Actual.PEMode,num2str(Actual.TR*1e3), ...
