@@ -67,7 +67,7 @@ end
 
 %% Get coil-combined magnitude and phase data %%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 [diff_phase, magnitude] = combineCoils(kspace, dwelltime, weigh_equal, singleCoil, numRepPerGIRF);
-% dimensions: [numROP, numPE, numPE, numSlices, numAvg, numRep]
+% dimensions: [numROP, numPE, numPE, numSlices, triangles, ADCs, repetitions]
 clearvars kspace;
 
 %% Average magnitude data over numRepPerGIRF repetitions %%%%%%%%%%%%%%%%%%
@@ -80,7 +80,7 @@ end
 magnitude_avg = magnitude_avg(:,:,:,:,:,:,numGIRF);
 clearvars magnitude;
 
-%% Separate triangles with positive and negative sign %%%%%%%%%%%%%%%%%%%%% 
+%% Separate triangles with positive and negative sign %%%%%%%%%%%%%%%%%%%%%
 diff_phase_plus = diff_phase(:,:,:,:,1:2:end-1,:,:); % [numROP, numPE, numPE, numSlices, numTriang, numADC, numRep]
 diff_phase_minus = diff_phase(:,:,:,:,2:2:end,:,:);
 clearvars diff_phase;
@@ -89,7 +89,7 @@ magnitude_plus = magnitude_avg(:,:,:,:,1:2:end-1,:); % [numROP, numPE, numPE, nu
 clearvars magnitude_avg;
 
 %% Calculate difference between positive and negative triangles %%%%%%%%%%%
-delta_diff_phase = (diff_phase_plus - diff_phase_minus)/2; % [numROP, numPE, numPE, numSlices, numTriang, numRep]
+delta_diff_phase = (diff_phase_plus - diff_phase_minus)/2;
 clearvars diff_phase_plus diff_phase_minus;
 
 % Average over numRepPerGIRF repetitions
@@ -100,40 +100,103 @@ end
 clearvars delta_diff_phase;
 
 % Take the specified iteration for the GIRF
-delta_diff_phase_avg = delta_diff_phase_avg(:,:,:,:,:,:,numGIRF); % [numROP, numPE, numPE, numSlices, numTriang, numADC, 1]
+delta_diff_phase_avg = delta_diff_phase_avg(:,:,:,:,:,:,numGIRF);
 
-delta_diff_phase_avg = permute(delta_diff_phase_avg, [2,3,4,1,5,6,7]); % [numPE, numPE, numSlices, numROP, numTriang, numADC, 1]
-delta_diff_phase_avg = reshape(delta_diff_phase_avg, [numPE*numPE*numSlices, numROP, numTriang*numDelays, numADC, 1]);
-delta_diff_phase_avg = reshape(delta_diff_phase_avg, [numPE*numPE*numSlices, numROP*numTriang*numDelays*numADC]); % [numVoxels, numTimePoints]
+delta_diff_phase_avg = permute(delta_diff_phase_avg, [2,3,4,1,5,6,7]);
+% [numPE, numPE, numSlices, numROP, numTriang*numDelays, numADC, 1]
+delta_diff_phase_avg = reshape(delta_diff_phase_avg, ...
+    [numPE*numPE*numSlices, numROP, numTriang*numDelays, numADC]);
 
 %% Get the positions of the measured voxels %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-positions = createPositionArray(orientation, numPE, numSlices, FOV, PosSlices); % [numPE, numPE, numSlices, 3]
-positions = reshape(positions, [numPE*numPE*numSlices, 3]); % [numVoxels, 3]
+positions = createPositionArray(orientation, numPE, numSlices, FOV, PosSlices);
+positions = reshape(positions, [numPE*numPE*numSlices, 3]);
+
+%% Prepare magnitude data for voxel selection %%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+magnitude_plus = permute(magnitude_plus, [2,3,4,1,5,6]);
+magnitude_plus = reshape(magnitude_plus, ...
+    [numPE*numPE*numSlices, numROP, numTriang*numDelays, numADC]);
+
+% Mean magnitude time course across the positive-polarity test gradients.
+% This is used for display in the High-Order voxel-selection GUI.
+magnitude_gui = mean(magnitude_plus,3);
+magnitude_gui = mean(magnitude_gui,4);
+magnitude_gui = reshape(magnitude_gui,[numPE*numPE*numSlices,numROP]);
 
 %% Sort out unusable voxels %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% by thresholding the signal magnitude
-magnitude_plus = permute(magnitude_plus, [2,3,4,1,5,6]); % [numPE, numPE, numSlices, numROP, numTriang, numADC]
-magnitude_plus = reshape(magnitude_plus, [numPE*numPE*numSlices, numROP, numTriang*numDelays, numADC]);
-magnitude_plus = reshape(magnitude_plus, [numPE*numPE*numSlices, numROP*numTriang*numDelays*numADC]); % [numVoxels, numTimePoints+1]
-magnitude_plus = squeeze(mean(magnitude_plus(:,10:50),2));
+validVoxels = true(size(positions,1),1);
 
-max_mag = max(magnitude_plus);
+if numPE > 1
+    % Spatially resolved High-Order acquisition. Reuse a saved selection
+    % automatically when it is compatible and supports the requested SH
+    % expansion; otherwise open the interactive voxel-selection GUI.
+    [selectionPath,selectionName,~] = fileparts(file);
+    defaultSelectionFile = fullfile(selectionPath,[selectionName,'_voxelSelection.mat']);
+    useSavedSelection = false;
 
-validVoxels = zeros(size(positions,1),1) + 1;
+    if exist(defaultSelectionFile,'file')
+        savedSelection = load(defaultSelectionFile);
+        savedPositionsOK = true;
 
-if size(positions,1)>2
-    for voxel=numPE*numPE*numSlices:-1:1
-        if magnitude_plus(voxel) < max_mag*0.6
-            positions(voxel,:) = [];
-            delta_diff_phase_avg(voxel,:) = [];
-            validVoxels(voxel) = 0;
+        if isfield(savedSelection,'selection') && isfield(savedSelection.selection,'validVoxels')
+            savedMask = logical(savedSelection.selection.validVoxels(:));
+            if isfield(savedSelection.selection,'positions')
+                savedPositions = savedSelection.selection.positions;
+                savedPositionsOK = isequal(size(savedPositions),size(positions)) && ...
+                    max(abs(savedPositions(:)-positions(:))) < 1e-9;
+            end
+        elseif isfield(savedSelection,'validVoxels')
+            savedMask = logical(savedSelection.validVoxels(:));
+        else
+            savedMask = [];
+        end
+
+        if numel(savedMask) == size(positions,1) && savedPositionsOK
+            savedA = createProbingMatrix(positions(savedMask,:),calcChannels);
+            if sum(savedMask) >= calcChannels && rank(savedA) == calcChannels
+                validVoxels = savedMask;
+                useSavedSelection = true;
+                disp(['Loaded saved voxel selection: ',defaultSelectionFile]);
+            else
+                disp('Saved voxel selection is rank deficient for the requested SH expansion; opening GUI.');
+            end
+        else
+            disp('Saved voxel selection does not match the current spatial geometry; opening GUI.');
         end
     end
+
+    if ~useSavedSelection
+        [validVoxels, voxelSelection] = selectVoxelsGUI(positions, ...
+            magnitude_gui,delta_diff_phase_avg,numPE,numSlices,calcChannels, ...
+            defaultSelectionFile);
+
+        % Save the confirmed selection automatically so that subsequent
+        % processing of the same dataset is reproducible and non-interactive.
+        selection = voxelSelection; %#ok<NASGU>
+        save(defaultSelectionFile,'selection','validVoxels');
+        disp(['Saved voxel selection: ',defaultSelectionFile]);
+    end
+else
+    % Legacy thin-slice behavior. Keep the original 60% magnitude
+    % threshold unchanged for backwards compatibility.
+    idx1 = min(10,numROP);
+    idx2 = min(50,numROP);
+    magnitude_metric = squeeze(mean(magnitude_plus(:,idx1:idx2,1,1),2));
+    max_mag = max(magnitude_metric);
+
+    if size(positions,1)>2 && max_mag>0
+        validVoxels = magnitude_metric >= max_mag*0.6;
+    end
 end
-clearvars magnitude_plus;
+
+positions = positions(validVoxels,:);
+delta_diff_phase_avg = delta_diff_phase_avg(validVoxels,:,:,:);
+delta_diff_phase_avg = reshape(delta_diff_phase_avg, ...
+    [size(delta_diff_phase_avg,1), numROP*numTriang*numDelays*numADC]);
+
+clearvars magnitude_plus magnitude_gui;
 
 %% Get the probing matrix %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% to translate voxel positions into sperical harmonics
+% to translate voxel positions into spherical harmonics
 if size(positions,1)<4
     probingMatrix = zeros(size(positions,1), calcChannels);
     for slice=1:1:size(positions,1)
@@ -153,16 +216,32 @@ if size(positions,1)<4
         end
     end
 else
-    probingMatrix = createProbingMatrix(positions,calcChannels); % [numValidVoxels, 4/9/16], depending on the maximum expansion order
+    probingMatrix = createProbingMatrix(positions,calcChannels); % [numValidVoxels, 4/9/16]
 end
+
+%% Check spatial conditioning %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+rankA = rank(probingMatrix);
+columnNorm = sqrt(sum(abs(probingMatrix).^2,1));
+columnNorm(columnNorm == 0) = 1;
+probingMatrixNormalized = probingMatrix ./ columnNorm;
+
+if rankA < calcChannels
+    error(['The selected voxels are rank deficient for the requested field expansion. ' ...
+        'rank(A) = %d, requested channels = %d.'],rankA,calcChannels);
+end
+
+condA = cond(probingMatrixNormalized);
+disp(['Spatial probing matrix: ',num2str(size(probingMatrix,1)), ...
+    ' voxels, rank ',num2str(rankA),'/',num2str(calcChannels), ...
+    ', normalized cond(A) = ',num2str(condA)]);
+clearvars probingMatrixNormalized columnNorm;
 
 %% Calculate the output signals %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 gamma = 267.513*10^6; % rad/s/T
 out_signals = 1/gamma * (probingMatrix\delta_diff_phase_avg); % [channels, numTimePoints]
-out_signals = reshape(out_signals, [calcChannels, numROP, numTriang*numDelays, numADC]); % [calcChannels, numROP, numTriang, numADC]
+out_signals = reshape(out_signals, [calcChannels, numROP, numTriang*numDelays, numADC]);
 out_signals = permute(out_signals, [1,4,2,3]);
 out_signals(isnan(out_signals)) = 0;
 % Dimensions of out_signals: [channels, ADC readouts, read-out-points, test gradients]
 
 end
-
