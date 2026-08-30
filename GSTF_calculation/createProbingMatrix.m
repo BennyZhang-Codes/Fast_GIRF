@@ -2,11 +2,11 @@ function [ probingMatrix ] = createProbingMatrix( positions, calcChannels )
 % This function creates the "probing matrix" that translates voxel positions 
 % into basis functions, i.e. spherical harmonics, for the field expansion.
 % Arguments:
-%   positions:    voxel positions in mm
-%   calcChannels: number of spherical harmonics to evaluate
+%   positions:    voxel positions in meters
+%   calcChannels: number of spherical harmonics to evaluate (4, 9, or 16)
 %
 % Returns:
-%   probingMatrix: matrix that transforms between voxel positions and coefficients of sperical harmonics
+%   probingMatrix: matrix that transforms between voxel positions and coefficients of spherical harmonics
 
 % Copyright (c) 2022 Hannah Scholten
 
@@ -25,7 +25,7 @@ if numVoxels > 3
         y = positions(p,2);
         z = positions(p,3);
         
-        % The following formulas for the real-valued sperical harmonics were taken
+        % The following formulas for the real-valued spherical harmonics were taken
         % from https://en.wikipedia.org/wiki/Table_of_spherical_harmonics#Real_spherical_harmonics
         probingMatrix(p,1) = 1;
         
@@ -40,7 +40,7 @@ if numVoxels > 3
             probingMatrix(p,8) = z*x;
             probingMatrix(p,9) = (x*x-y*y);
             
-            if numVoxels > 15
+            if ((numVoxels > 15) && (calcChannels > 9))
                 probingMatrix(p,10) = (3*x*x-y*y)*y;
                 probingMatrix(p,11) = x*y*z;
                 probingMatrix(p,12) = (4*z*z-x*x-y*y)*y;
@@ -56,13 +56,3 @@ end
 disp(['probingMatrix successfully created. size: ',num2str(size(probingMatrix))])
 
 end
-
-
-
-
-
-
-
-
-
-
