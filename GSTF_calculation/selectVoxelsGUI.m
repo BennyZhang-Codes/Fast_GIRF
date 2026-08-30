@@ -1,4 +1,4 @@
-function [ validVoxels, selection ] = selectVoxelsGUI(positions, magnitudeData, fieldData, numPE, numSlices, calcChannels, defaultSaveFile)
+function [ validVoxels, selection ] = selectVoxelsGUI(positions, magnitudeData, fieldData, numPE, numSlices, calcChannels, defaultSaveFile, allowedVoxels)
 % Interactive voxel selection for spatially resolved high-order GIRF data.
 %
 % Arguments:
@@ -9,20 +9,23 @@ function [ validVoxels, selection ] = selectVoxelsGUI(positions, magnitudeData, 
 %   numSlices:       number of excited slices
 %   calcChannels:    number of spherical-harmonic channels (4, 9, or 16)
 %   defaultSaveFile: suggested file name for saving the voxel selection
+%   allowedVoxels:   optional logical mask of voxels that pass basic data
+%                    validity checks; invalid voxels cannot be selected
 %
 % Returns:
 %   validVoxels: logical mask of selected voxels
 %   selection:   structure containing the selected mask and QC metrics
-%
-% The automatic selection follows the legacy Fast_GIRF magnitude criterion.
-% The GUI allows manual addition/removal of voxels and reports the rank and
-% normalized condition number of the spherical-harmonic probing matrix.
 
-if nargin < 7
+if nargin < 7 || isempty(defaultSaveFile)
     defaultSaveFile = 'voxel_selection.mat';
 end
 
 numVoxels = size(positions,1);
+if nargin < 8 || isempty(allowedVoxels)
+    allowedVoxels = true(numVoxels,1);
+end
+allowedVoxels = logical(allowedVoxels(:));
+
 if numVoxels ~= numPE*numPE*numSlices
     error('Voxel dimensions do not match numPE x numPE x numSlices.');
 end
@@ -32,23 +35,36 @@ end
 if size(fieldData,1) ~= numVoxels
     error('fieldData does not match the number of voxel positions.');
 end
+if numel(allowedVoxels) ~= numVoxels
+    error('allowedVoxels does not match the number of voxel positions.');
+end
 
 %% Automatic voxel selection %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 idx1 = min(10,size(magnitudeData,2));
 idx2 = min(50,size(magnitudeData,2));
 signalMetric = mean(magnitudeData(:,idx1:idx2),2);
-maxMetric = max(signalMetric);
+signalMetric(~isfinite(signalMetric)) = 0;
+
+allowedMetric = signalMetric(allowedVoxels);
+if isempty(allowedMetric)
+    maxMetric = 0;
+else
+    maxMetric = max(allowedMetric);
+end
 
 if maxMetric > 0
     autoMask = signalMetric >= 0.6*maxMetric;
 else
     autoMask = false(numVoxels,1);
 end
-autoMask = autoMask & isfinite(signalMetric);
+autoMask = autoMask & allowedVoxels;
 selected = autoMask;
 currentVoxel = find(selected,1,'first');
 if isempty(currentVoxel)
-    currentVoxel = 1;
+    currentVoxel = find(allowedVoxels,1,'first');
+end
+if isempty(currentVoxel)
+    error('No finite High-Order voxels are available for selection.');
 end
 
 % Build the complete probing matrix once. Sub-selection is applied in the
@@ -93,11 +109,11 @@ for sl = 1:numSlices
     xlabel(sliceAxes(sl),'PE 1');
     ylabel(sliceAxes(sl),'PE 2');
     title(sliceAxes(sl),sprintf('Slice %d',sl));
-    caxis(sliceAxes(sl),[0 2]);
+    caxis(sliceAxes(sl),[-1 2]);
 end
 
-% 0 = rejected, 1 = auto-selected, 2 = manually added
-colormap(fig,[0.82 0.82 0.82; 0.42 0.72 0.46; 0.35 0.55 0.86]);
+% -1 = invalid, 0 = rejected, 1 = auto-selected, 2 = manually added
+colormap(fig,[0.55 0.55 0.55; 0.86 0.86 0.86; 0.42 0.72 0.46; 0.35 0.55 0.86]);
 
 axMagnitude = axes('Parent',fig,'Position',[0.54 0.57 0.42 0.34]);
 axField = axes('Parent',fig,'Position',[0.54 0.20 0.42 0.28]);
@@ -137,6 +153,9 @@ selection = buildSelectionStructure();
         end
         localIndex = pe1 + (pe2-1)*numPE;
         voxelIndex = (sliceIndex-1)*numPE*numPE + localIndex;
+        if ~allowedVoxels(voxelIndex)
+            return;
+        end
         selected(voxelIndex) = ~selected(voxelIndex);
         currentVoxel = voxelIndex;
         updateGUI();
@@ -162,17 +181,27 @@ selection = buildSelectionStructure();
             return;
         end
         data = load(fullfile(pathName,fileName));
+        savedPositionsOK = true;
         if isfield(data,'selection') && isfield(data.selection,'validVoxels')
             loadedMask = logical(data.selection.validVoxels(:));
+            if isfield(data.selection,'positions')
+                savedPositions = data.selection.positions;
+                savedPositionsOK = isequal(size(savedPositions),size(positions)) && ...
+                    max(abs(savedPositions(:)-positions(:))) < 1e-9;
+            end
         elseif isfield(data,'validVoxels')
             loadedMask = logical(data.validVoxels(:));
         else
             errordlg('Selected file does not contain a valid voxel mask.','Load selection');
             return;
         end
-        if numel(loadedMask) ~= numVoxels
-            errordlg('Saved voxel mask does not match the current dataset.','Load selection');
+        if numel(loadedMask) ~= numVoxels || ~savedPositionsOK
+            errordlg('Saved voxel selection does not match the current spatial geometry.','Load selection');
             return;
+        end
+        if any(loadedMask & ~allowedVoxels)
+            warndlg('Saved selection contains invalid voxels; those voxels were removed.','Load selection');
+            loadedMask = loadedMask & allowedVoxels;
         end
         selected = loadedMask;
         idx = find(selected,1,'first');
@@ -204,8 +233,9 @@ selection = buildSelectionStructure();
     end
 
     function closeGUI(~,~)
-        % Closing the GUI keeps the current selection. If the selection is
-        % rank deficient, fall back to the automatic selection.
+        % Closing the window keeps the current selection if it is valid.
+        % Otherwise fall back to the automatic mask; the caller performs a
+        % final rank check and will stop rather than silently fit bad data.
         [rankA,~] = calculateMatrixQC(selected);
         if rankA < calcChannels
             selected = autoMask;
@@ -242,21 +272,22 @@ selection = buildSelectionStructure();
         else
             condText = 'Inf';
         end
-        set(statsText,'String',sprintf(['Selected voxels: %d    SH channels: %d    ' ...
+        set(statsText,'String',sprintf(['Selected: %d    Finite: %d/%d    SH channels: %d    ' ...
             'Rank: %d/%d    Normalized cond(A): %s'], ...
-            sum(selected),calcChannels,rankA,calcChannels,condText));
+            sum(selected),sum(allowedVoxels),numVoxels,calcChannels,rankA,calcChannels,condText));
         drawnow;
     end
 
     function map = getSelectionMap(sliceIndex)
         idx = (sliceIndex-1)*numPE*numPE + (1:numPE*numPE);
-        map = zeros(numPE,numPE);
+        values = zeros(numPE*numPE,1);
         selectedSlice = selected(idx);
         autoSlice = autoMask(idx);
-        values = zeros(numPE*numPE,1);
+        allowedSlice = allowedVoxels(idx);
+        values(~allowedSlice) = -1;
         values(selectedSlice & autoSlice) = 1;
         values(selectedSlice & ~autoSlice) = 2;
-        map(:) = values;
+        map = reshape(values,[numPE,numPE]);
     end
 
     function [rankA,condA] = calculateMatrixQC(mask)
@@ -281,6 +312,7 @@ selection = buildSelectionStructure();
         [rankA,condA] = calculateMatrixQC(selected);
         selectionOut = struct();
         selectionOut.validVoxels = logical(selected(:));
+        selectionOut.allowedVoxels = logical(allowedVoxels(:));
         selectionOut.positions = positions;
         selectionOut.signalMetric = signalMetric;
         selectionOut.autoMask = logical(autoMask(:));
