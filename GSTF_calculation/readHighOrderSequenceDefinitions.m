@@ -36,7 +36,8 @@ end
 
 requiredDefinitions = {'TR','adcDwell','adcSamples', ...
     'HighOrder_nPE','HighOrder_PEFOV','HighOrder_PEMode', ...
-    'HighOrder_numPEAcq','HighOrder_sliceOffsets_m','nRepetition'};
+    'HighOrder_numPEAcq','HighOrder_sliceOffsets_m','nRepetition', ...
+    'GSTF_rise','GSTF_amp_mT','GSTF_delays','GSTF_scheme_type'};
 
 for i = 1:length(requiredDefinitions)
     if ~isfield(defs,requiredDefinitions{i})
@@ -59,10 +60,23 @@ Protocol.sliceOffsets_m = getNumbers(defs.HighOrder_sliceOffsets_m);
 Protocol.sliceOffsets_mm = Protocol.sliceOffsets_m*1e3;
 Protocol.nRepetition = round(getNumbers(defs.nRepetition));
 
+Protocol.probeRise_s = getNumbers(defs.GSTF_rise);
+Protocol.probeAmp_mT = getNumbers(defs.GSTF_amp_mT);
+Protocol.probeDelays_s = getNumbers(defs.GSTF_delays);
+Protocol.probeScheme = round(getNumbers(defs.GSTF_scheme_type));
+
 Protocol.numSlices = length(Protocol.sliceOffsets_m);
-Protocol.numTriangles = 7;
+Protocol.numTriangles = length(Protocol.probeRise_s);
 Protocol.numPolarities = 2;
 Protocol.numAxes = 3;
+
+if Protocol.numTriangles < 1 || ...
+        length(Protocol.probeAmp_mT) ~= Protocol.numTriangles || ...
+        length(Protocol.probeDelays_s) ~= Protocol.numTriangles || ...
+        length(Protocol.probeScheme) ~= Protocol.numTriangles
+    error('GSTF probe definitions in the sequence have inconsistent lengths.');
+end
+
 Protocol.expectedAcquisitions = Protocol.numAxes * ...
     Protocol.nRepetition * Protocol.numTriangles * ...
     Protocol.numPolarities * Protocol.numPEAcq * Protocol.numSlices;
@@ -74,9 +88,25 @@ else
 end
 
 if isfield(defs,'TimeShiftADC_us')
-    Protocol.TimeShiftADC_definition = getNumbers(defs.TimeShiftADC_us);
+    Protocol.TimeShiftADC_us = getNumbers(defs.TimeShiftADC_us);
 else
-    Protocol.TimeShiftADC_definition = [];
+    Protocol.TimeShiftADC_us = [];
+end
+if isfield(defs,'TimeShiftADC_index')
+    Protocol.TimeShiftADC_index = round(getNumbers(defs.TimeShiftADC_index));
+else
+    Protocol.TimeShiftADC_index = [];
+end
+
+if isfield(defs,'HighOrder_AcquisitionOrder')
+    Protocol.AcquisitionOrder = strtrim(defs.HighOrder_AcquisitionOrder);
+else
+    Protocol.AcquisitionOrder = '';
+end
+if isfield(defs,'ScannerType')
+    Protocol.ScannerType = strtrim(defs.ScannerType);
+else
+    Protocol.ScannerType = '';
 end
 
 fprintf('Read High-Order protocol from sequence:\n');
@@ -88,6 +118,7 @@ fprintf(' %.1f',Protocol.sliceOffsets_mm);
 fprintf(' mm\n');
 fprintf('    ADC              : %d samples, %.3f us dwell\n', ...
     Protocol.adcSamples,Protocol.adcDwell*1e6);
+fprintf('    probes           : %d\n',Protocol.numTriangles);
 fprintf('    expected ADCs    : %d\n',Protocol.expectedAcquisitions);
 
 end
