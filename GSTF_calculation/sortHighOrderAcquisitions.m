@@ -41,7 +41,7 @@ for i=1:length(requiredVariables)
 end
 
 %% Prepare raw acquisition array %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-if size(rawFID,1) == 0 || size(rawFID,2) == 0
+if isempty(rawFID) || size(rawFID,1) == 0 || size(rawFID,2) == 0
     error('rawFID is empty.');
 end
 rawFID = reshape(rawFID,size(rawFID,1),size(rawFID,2),[]);
@@ -63,7 +63,7 @@ if ~ismember(axisName,{'x','y','z'})
     error('axisName must be ''x'', ''y'', or ''z''.');
 end
 
-axisMask = strcmp(acq_manifest.Axis,axisName);
+axisMask = strcmp(string(acq_manifest.Axis),axisName);
 axisRows = find(axisMask);
 axisManifest = acq_manifest(axisMask,:);
 
@@ -77,6 +77,7 @@ numROP = size(rawFID,1);
 numCoils = size(rawFID,2);
 
 kspace = zeros(numROP,numCoils,nPE,nPE,numSlices,2*numTriangles,1,1,numRep,'like',rawFID);
+occupied = false(nPE,nPE,numSlices,2*numTriangles,numRep);
 
 %% Sort acquisitions %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 for i=1:length(axisRows)
@@ -103,8 +104,22 @@ for i=1:length(axisRows)
     if sl < 1 || sl > numSlices
         error('Manifest slice index is outside the requested slice range.');
     end
+    if tri < 1 || tri > numTriangles || rep < 1 || rep > numRep
+        error('Manifest triangle/repetition index is outside the allocated range.');
+    end
+
+    if occupied(pe1,pe2,sl,triPol,rep)
+        error(['Duplicate manifest destination for %s-axis: PE=(%d,%d), ' ...
+            'slice=%d, triangle/polarity=%d, repetition=%d.'], ...
+            axisName,pe1,pe2,sl,triPol,rep);
+    end
+    occupied(pe1,pe2,sl,triPol,rep) = true;
 
     kspace(:,:,pe1,pe2,sl,triPol,1,1,rep) = rawFID(:,:,row);
+end
+
+if nnz(occupied) ~= length(axisRows)
+    error('Sorted acquisition occupancy does not match the number of manifest rows.');
 end
 
 fprintf(['Sorted High-Order GIRF acquisitions for %s-axis: %d ADCs -> ' ...
