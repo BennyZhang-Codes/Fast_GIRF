@@ -21,7 +21,10 @@ linear_array = (1:1:size(H.gstf,1))*pi;
 corrected_phase = angle(H.gstf.*exp(1i*(H.f_axis*2*pi*corr_delay+linear_array)).');
 corrected_phase_atZero = corrected_phase(floor(size(corrected_phase,1)/2)+3,referenceChannel);
 
-if abs(corrected_phase_atZero - phaseAtZero) > 1
+% Compare phases on the circle. A direct subtraction is incorrect close to
+% the -pi/pi branch cut and can select the wrong parity of linear_array.
+phaseError = angle(exp(1i*(corrected_phase_atZero-phaseAtZero)));
+if abs(phaseError) > 1
     linear_array = (0:1:size(H.gstf,1)-1)*pi;
 end
 
