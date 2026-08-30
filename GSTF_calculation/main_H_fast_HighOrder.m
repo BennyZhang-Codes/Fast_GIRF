@@ -4,46 +4,74 @@
 clear all;
 % Change current directory to that of this .m file
 mfile_name          = mfilename('fullpath');
-[pathstr,name,ext]  = fileparts(mfile_name);
+[pathstr,name,ext]  = fileparts(mfile_name); %#ok<ASGLU>
 cd(pathstr);
 
 t_tic_1 = tic; % For measuring the time
 
 %% Select data files %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-path = '../triangle_measurements/';     % Specify the path to the folder where the measurement data are stored
+path = '../triangle_measurements/';
 
-meas_name = 'measurement_H_fast_HighOrder_x.mat';  % x-axis
-% meas_name = 'measurement_H_fast_HighOrder_y.mat';  % y-axis
-% meas_name = 'measurement_H_fast_HighOrder_z.mat';  % z-axis
-files = dir([path,meas_name]);
+meas_name = 'measurement_H_fast_HighOrder_x.mat';
+% meas_name = 'measurement_H_fast_HighOrder_y.mat';
+% meas_name = 'measurement_H_fast_HighOrder_z.mat';
+files = dir(fullfile(path,meas_name));
 measfiles = {files.name};
 
-ax_name = 'x';  % Specify the axis corresponding to the measurement
-% ax_name = 'y';
-% ax_name = 'z';
+% Derive the physical input axis from the measurement file name instead of
+% maintaining a second manually edited ax_name variable.
+axisToken = regexp(meas_name,'_([xyz])\.mat$','tokens','once');
+if isempty(axisToken)
+    error('Could not determine x/y/z axis from measurement file name: %s',meas_name);
+end
+ax_name = axisToken{1};
 
 input_path = path;
 input_name = 'input_H_fast_HighOrder.mat';
-files = dir([input_path,input_name]);
+files = dir(fullfile(input_path,input_name));
 inputfiles = {files.name};
-
-% IMPORTANT: Check that the measurement files and the input files correspond to each other!!!
-for i=1:1:length(measfiles)
-    disp(['measurement file #',num2str(i),': ',measfiles{i}])
-    disp(['      input file #',num2str(i),': ',inputfiles{i}])
-    disp(' ')
-end
 
 if isempty(measfiles)
     error('No High-Order measurement file found. Check path and meas_name.');
 end
-if isempty(inputfiles)
-    error('No High-Order input file found. Check input_path and input_name.');
+if length(measfiles) ~= 1
+    error('Expected exactly one High-Order measurement file for the selected axis.');
 end
+if isempty(inputfiles)
+    error(['No input_H_fast_HighOrder.mat found in the measurement folder. ' ...
+        'Use prepareHighOrderTwixFromSequence() to copy the exact nominal input.']);
+end
+if length(inputfiles) ~= 1
+    error('Expected exactly one High-Order nominal input file.');
+end
+
+% Verify that the measurement metadata agrees with the axis encoded in its
+% file name before any GIRF calculation is performed.
+measurementMeta = load(fullfile(path,measfiles{1}),'orientation');
+if ~isfield(measurementMeta,'orientation')
+    error('Measurement file does not contain orientation metadata.');
+end
+if strcmp(ax_name,'x')
+    expectedOrientation = 'dSag';
+elseif strcmp(ax_name,'y')
+    expectedOrientation = 'dCor';
+else
+    expectedOrientation = 'dTra';
+end
+if ~strcmp(measurementMeta.orientation,expectedOrientation)
+    error(['Measurement/axis mismatch: %s implies %s, but the file contains %s.'], ...
+        ax_name,expectedOrientation,measurementMeta.orientation);
+end
+
+fprintf('measurement file: %s\n',measfiles{1});
+fprintf('input file      : %s\n\n',inputfiles{1});
 
 doSaveGIRFs = 1;
 path2save = './results/';
-name2save = ['HighOrder_',meas_name(13:end)];
+if ~exist(path2save,'dir')
+    mkdir(path2save);
+end
+name2save = ['HighOrder_GSTF_',ax_name,'.mat'];
 
 %% Set high-order field expansion %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % 4 channels  = B0 + first order
@@ -55,59 +83,46 @@ if ~ismember(calcChannels,[4,9,16])
     error('calcChannels must be 4, 9, or 16 for spatial High-Order processing.');
 end
 
-% The self-term depends on the physical test-gradient axis because the
-% spatial basis is always ordered as [B0, X, Y, Z, ...].
+% Spatial basis is always [B0, X, Y, Z, ...].
 if strcmp(ax_name,'x')
     selfTerm = 2;
 elseif strcmp(ax_name,'y')
     selfTerm = 3;
-elseif strcmp(ax_name,'z')
-    selfTerm = 4;
 else
-    error('Unknown ax_name. Use x, y, or z.');
+    selfTerm = 4;
 end
 term2plot = selfTerm;
 
 %% Set parameters %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 prep = preparation;
-% The preparation object will hold the input and measured output data and
-% associated parameters necessary for preparing the data for the GIRF calculation.
-prep.numRepPerGIRF = 1;         % number of acquired repetitions/averages used for one GIRF
-prep.numGIRF = 1;               % which averaged dataset should be evaluated
-prep.numADC = 1;                % number of readouts per TR to evaluate
-prep.numTriang = 1;             % number of triangles per delay
-prep.numTriangs4fft = 2;        % number of triangles used for H_FFT
-prep.numDelays = 7;             % number of Fast-GIRF delays
+prep.numRepPerGIRF = 1;
+prep.numGIRF = 1;
+prep.numADC = 1;
+prep.numTriang = 1;
+prep.numTriangs4fft = 2;
+prep.numDelays = 7;
 prep.skipTriangles = cell(1,length(measfiles));
 prep.singleCoil = 0;
 prep.skipCoils = [];
-prep.resamp_factors = [10];     % time resolution for matrix calculation in us
-prep.cut_time = 80;             % points cut at the beginning/end of each measurement period
+prep.resamp_factors = [10];
+prep.cut_time = 80;
 prep.VarPreMeas = 0;
 prep.calcChannels = calcChannels;
 
-% Some more parameters needed for the GIRF-calculation
-corr_delay = 0.95e-4;       % compensate phase error introduced by matrix construction/resampling
-lambda = sqrt(1e-7);        % Tikhonov regularization weighting factor
-A = 600;                    % frequency-dependent regularization growth factor
-omega_0 = 2500;             % cutoff between LF and HF GSTF [Hz]
+% Fast_GIRF regularization parameters retained from the original workflow.
+corr_delay = 0.95e-4;
+lambda = sqrt(1e-7);
+A = 600;
+omega_0 = 2500;
 
 %% Preparation %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 disp('Prepare High-Order input and output data...')
-% For spatial data (numPE > 1), calculateOutputGradient() reuses a saved
-% voxel selection when available and compatible. Otherwise it opens the
-% voxel-selection GUI and automatically saves the confirmed selection.
 prep.prepare_Data(path,measfiles,input_path,inputfiles);
 dts_out = prep.dts_resamp;
 prep.findMax_tshift();
-% Dimensions:
-% prep.input{k}: [numGRTTimePoints, numTriang]
-% prep.output{k}: [calcChannels, numADC, numGRTTimePoints, numTriang]
-% prep.input4fft: [numADCTimePoints, numTriang]
-% prep.output4fft: [calcChannels, numADCTimePoints, numTriang]
 
 % Exclude the final part of scheme-i measurements because the same time
-% window is covered by the measurement with the 1-ms delayed excitation.
+% window is covered by the measurement with 1-ms delayed excitation.
 prep.discardData{1}(:,1,1000:end,1:2) = 0;
 disp('    High-Order data prepared.')
 
@@ -125,18 +140,18 @@ numInputChannels = 1;
 lengthADC = size(prep.output{1},3);
 dt_in = dts_out(1);
 
-lengthH = floor((prep.findMax_tshift() - prep.t_shift{1}(1,1))/dt_in + ...
-    lengthADC - 990/prep.resamp_factors(1));
+lengthH = floor((prep.findMax_tshift()-prep.t_shift{1}(1,1))/dt_in + ...
+    lengthADC-990/prep.resamp_factors(1));
 if ~mod(lengthH,2)
-    lengthH = lengthH - 1;
+    lengthH = lengthH-1;
 end
 
 inputMatrix_LF = prep.calcInputMatrix(numInputChannels,lengthH,[],[]);
 outputMatrix_LF = prep.calcOutputMatrix([],[]);
 
-lengthH_HF = floor(lengthADC - 990/prep.resamp_factors(1)) - 200;
+lengthH_HF = floor(lengthADC-990/prep.resamp_factors(1))-200;
 if ~mod(lengthH_HF,2)
-    lengthH_HF = lengthH_HF - 1;
+    lengthH_HF = lengthH_HF-1;
 end
 inputMatrix_HF = prep.calcInputMatrix_firstMeas(numInputChannels,lengthH_HF,0,prep.numTriangs4fft/prep.numTriang);
 outputMatrix_HF = prep.calcOutputMatrix_firstMeas(0,prep.numTriangs4fft/prep.numTriang);
@@ -147,7 +162,7 @@ disp(['    size(inputMatrix_HF) = ',num2str(size(inputMatrix_HF))])
 disp(['    size(outputMatrix_HF) = ',num2str(size(outputMatrix_HF))])
 disp('    Matrices prepared.')
 
-%% Calculate GIRFs in the time domain with the matrix inversion method %%%%
+%% Calculate GIRFs in time domain %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 disp('Calculate High-Order H_LF and H_HF in time domain...')
 H_LF = GIRF_matrix(dt_in,lengthH);
 H_HF = GIRF_matrix(dt_in,lengthH_HF);
@@ -157,10 +172,8 @@ alpha_array = alpha_func(H_HF.f_axis,omega_0,H_HF.f_axis(end),A);
 H_HF.calcH_matrix_Tikhonov_freqWeight(inputMatrix_HF,outputMatrix_HF,lambda,alpha_array);
 
 %% Phase correction %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% Use the physical self-term as the phase reference. For the full spatial
-% basis this is X=2, Y=3, or Z=4 depending on the driven gradient axis.
-% Keep the original GIRF_matrix.m unchanged and apply the High-Order
-% reference-channel extension through a dedicated helper.
+% Retain the original Fast_GIRF phase-reference frequency-bin convention,
+% but use the physical self-term (X/Y/Z) as the reference channel.
 phaseAtZero_fft = angle(H_fft.gstf(floor(size(H_fft.gstf,1)/2)+3,selfTerm));
 correctHighOrderGSTFPhase(H_LF,phaseAtZero_fft,corr_delay,selfTerm);
 correctHighOrderGSTFPhase(H_HF,phaseAtZero_fft,corr_delay,selfTerm);
@@ -184,26 +197,21 @@ t_toc_2 = toc(t_tic_2);
 
 %% Save GIRFs %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 if doSaveGIRFs
-    save([path2save,name2save],'H_combined','lambda','alpha_array','H_LF', ...
-        'H_HF','H_fft','dts_out','corr_delay','omega_0','calcChannels','selfTerm');
+    save(fullfile(path2save,name2save),'H_combined','lambda','alpha_array','H_LF', ...
+        'H_HF','H_fft','dts_out','corr_delay','omega_0','calcChannels','selfTerm','ax_name');
     disp('Saved High-Order results.');
 else
     disp('High-Order results were not saved.');
 end
-t_toc_1 = toc(t_tic_1);
+t_toc_1 = toc(t_tic_1); %#ok<NASGU>
 
 %% Plot GSTFs %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 disp('Plotting...')
-
-% Keep the original Fast_GIRF comparison plot for the physical self-term.
 plotter = GIRF_plotter();
 plotter.plot_GSTFs(H_fft,['H^f^a^s^t_F_F_T_,_',ax_name], ...
     H_LF,['H^f^a^s^t_L_F_,_',ax_name], ...
     H_HF,['H^f^a^s^t_H_F_,_',ax_name], ...
     H_combined,['H^f^a^s^t_,_',ax_name],4,term2plot,ax_name);
-
-% Plot all available spatial terms grouped by SH order. Different spatial
-% orders have different GSTF units and are therefore shown separately.
 plotHighOrderGSTFs(H_combined,ax_name,5);
 
 disp('    main_H_fast_HighOrder.m finished.')
